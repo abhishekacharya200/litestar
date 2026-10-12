@@ -2,6 +2,7 @@ import dataclasses
 from typing import TYPE_CHECKING, Annotated, Any, NewType, Optional, cast
 from uuid import UUID
 
+import msgspec
 import pytest
 
 from litestar import Controller, Litestar, Router, get
@@ -622,3 +623,16 @@ def test_reference_parameter_keeps_component_description_when_wrapper_has_none()
     parameters = _create_parameters(app=Litestar(route_handlers=[handler]), path="/genders")
 
     assert parameters[0].description == Gender.__doc__
+
+
+def test_msgspec_meta_on_parameter() -> None:
+    # https://github.com/litestar-org/litestar/issues/3997
+    @get("/")
+    async def handler(page: Annotated[int, msgspec.Meta(ge=1, description="Page number")] = 1) -> None:
+        return None
+
+    parameters = _create_parameters(app=Litestar(route_handlers=[handler]), path="/")
+
+    assert parameters[0].description == "Page number"
+    assert is_schema_value(parameters[0].schema)
+    assert parameters[0].schema.minimum == 1

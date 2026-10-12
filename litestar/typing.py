@@ -30,6 +30,7 @@ except ImportError:
 
 from typing import NewType, NotRequired, Required, get_args, get_origin, get_type_hints
 
+import msgspec
 from msgspec import UnsetType
 from typing_extensions import (
     TypeAliasType as TeTypeAliasType,
@@ -46,6 +47,7 @@ except ImportError:
     TypeAliasTypes = (TeTypeAliasType,)  # type: ignore[assignment]
 
 from litestar.exceptions import ImproperlyConfiguredException
+from litestar.openapi.spec import Example
 from litestar.params import BodyKwarg, KwargDefinition, ParameterKwarg
 from litestar.types.builtin_types import NoneType, UnionTypes
 from litestar.utils.predicates import (
@@ -108,6 +110,31 @@ def _annotated_types_extractor(meta: Any, is_sequence_container: bool) -> dict[s
         elif meta.func == str.isdigit:  # pragma: no cover  # coverage quirk: It expects a jump here for branch coverage
             kwargs["pattern"] = "[[:digit:]]"
     return kwargs
+
+
+def _msgspec_meta_extractor(meta: Any, is_sequence_container: bool) -> dict[str, Any]:
+    if not isinstance(meta, msgspec.Meta):
+        return {}
+
+    kwargs: dict[str, Any] = {
+        "gt": meta.gt,
+        "ge": meta.ge,
+        "lt": meta.lt,
+        "le": meta.le,
+        "multiple_of": meta.multiple_of,
+        "pattern": meta.pattern,
+        "title": meta.title,
+        "description": meta.description,
+    }
+    if is_sequence_container:
+        kwargs["min_items"] = meta.min_length
+        kwargs["max_items"] = meta.max_length
+    else:
+        kwargs["min_length"] = meta.min_length
+        kwargs["max_length"] = meta.max_length
+    if meta.examples:
+        kwargs["examples"] = [Example(value=example) for example in meta.examples]
+    return {key: value for key, value in kwargs.items() if value is not None}
 
 
 @dataclass(frozen=True)
@@ -485,6 +512,9 @@ class FieldDefinition:
             for meta in metadata:
                 kwarg_definition_merge_args.update(
                     _annotated_types_extractor(meta, is_sequence_container=is_sequence_container)
+                )
+                kwarg_definition_merge_args.update(
+                    _msgspec_meta_extractor(meta, is_sequence_container=is_sequence_container)
                 )
             # if we already have a KwargDefinition, merge it with the additional metadata
             if existing_kwargs_definition := kwargs.get("kwarg_definition"):

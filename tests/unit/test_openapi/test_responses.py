@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
 from types import ModuleType
-from typing import Any, TypeAlias, TypedDict, TypeVar
+from typing import Annotated, Any, TypeAlias, TypedDict, TypeVar
 from unittest.mock import MagicMock
 
+import msgspec
 import pytest
 
 from litestar import Controller, Litestar, MediaType, Response, delete, get, post
@@ -598,6 +599,25 @@ def test_response_generation_with_dto(create_factory: CreateFactoryFixture) -> N
     mock_dto.create_openapi_schema.assert_called_once_with(
         field_definition=field_definition, handler_id=resolved_handler.handler_id, schema_creator=factory.schema_creator
     )
+
+
+def test_create_success_response_with_msgspec_meta_description() -> None:
+    # https://github.com/litestar-org/litestar/issues/3997
+    class Resp(msgspec.Struct):
+        foo: str = "bar"
+
+    @get("/", signature_namespace={"Resp": Resp})
+    async def handler() -> Annotated[Resp, msgspec.Meta(description="A response object.")]:
+        return Resp()
+
+    app = Litestar([handler])
+    response = app.openapi_schema.paths["/"].get.responses["200"]  # type: ignore[index, union-attr]
+    schema = response.content["application/json"].schema  # type: ignore[index, union-attr]
+
+    assert isinstance(schema, Schema)
+    assert schema.description == "A response object."
+    assert schema.all_of
+    assert isinstance(schema.all_of[0], Reference)
 
 
 @pytest.mark.parametrize(

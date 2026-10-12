@@ -24,6 +24,7 @@ try:
 except ImportError:
     TypeAliasType = TeTypeAliasType
 
+from litestar.openapi.spec import Example
 from litestar.params import KwargDefinition, ParameterKwarg
 from litestar.typing import FieldDefinition
 from tests.unit.test_utils.test_signature import T, _check_field_definition, field_definition_int, test_type_hints
@@ -176,6 +177,42 @@ def test_field_definition_with_annotated_kwarg_definition() -> None:
     kwarg_definition = KwargDefinition()
     fd = FieldDefinition.from_annotation(Annotated[str, kwarg_definition])
     assert fd.kwarg_definition is kwarg_definition
+
+
+def test_field_definition_kwarg_definition_from_msgspec_meta() -> None:
+    # https://github.com/litestar-org/litestar/issues/3997
+    fd = FieldDefinition.from_annotation(
+        Annotated[
+            str,
+            msgspec.Meta(
+                title="title", description="description", examples=["foo"], min_length=1, max_length=3, pattern="^f"
+            ),
+        ]
+    )
+    assert fd.kwarg_definition == KwargDefinition(
+        title="title",
+        description="description",
+        examples=[Example(value="foo")],
+        min_length=1,
+        max_length=3,
+        pattern="^f",
+    )
+
+    fd = FieldDefinition.from_annotation(Annotated[int, msgspec.Meta(gt=1, lt=10, multiple_of=2)])
+    assert fd.kwarg_definition == KwargDefinition(gt=1, lt=10, multiple_of=2)
+
+    fd = FieldDefinition.from_annotation(Annotated[float, msgspec.Meta(ge=1.5, le=9.5)])
+    assert fd.kwarg_definition == KwargDefinition(ge=1.5, le=9.5)
+
+    fd = FieldDefinition.from_annotation(Annotated[List[int], msgspec.Meta(min_length=1, max_length=2)])
+    assert fd.kwarg_definition == KwargDefinition(min_items=1, max_items=2)
+
+
+def test_field_definition_msgspec_meta_merged_into_kwarg_definition() -> None:
+    fd = FieldDefinition.from_annotation(
+        Annotated[int, ParameterKwarg(description="description"), msgspec.Meta(ge=1)], name="foo"
+    )
+    assert fd.kwarg_definition == ParameterKwarg(description="description", ge=1)
 
 
 def test_field_definition_from_union_annotation() -> None:
