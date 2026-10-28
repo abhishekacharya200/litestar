@@ -7,7 +7,8 @@ import string
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from redis.exceptions import ResponseError
 
 import pytest
 from _pytest.fixtures import FixtureRequest
@@ -580,3 +581,63 @@ async def test_valkey_store_with_client_shutdown(valkey_service: None) -> None:
         for x in valkey_store._valkey.connection_pool._available_connections
         + list(valkey_store._valkey.connection_pool._in_use_connections)
     )
+
+
+async def test_redis_store_getex_used_when_supported() -> None:
+    mock_redis = MagicMock()
+    mock_redis.getex = AsyncMock(return_value=b"test-value")
+    mock_redis.register_script = MagicMock()
+
+    store = RedisStore(redis=mock_redis, namespace="test")
+    val = await store.get("mykey", renew_for=60)
+
+    assert val == b"test-value"
+    mock_redis.getex.assert_awaited_once_with("test:mykey", ex=60)
+    store._get_and_renew_script.assert_not_called()
+
+
+async def test_redis_store_getex_fallback_to_script_on_unknown_command() -> None:
+    mock_redis = MagicMock()
+    mock_redis.getex = AsyncMock(side_effect=ResponseError("unknown command 'GETEX'"))
+    mock_script = AsyncMock(return_value=b"fallback-value")
+    mock_redis.register_script = MagicMock(return_value=mock_script)
+
+    store = RedisStore(redis=mock_redis, namespace="test")
+    assert store._supports_getex is True
+
+    # First call encounters ResponseError and falls back to Lua script
+    val1 = await store.get("mykey", renew_for=30)
+    assert val1 == b"fallback-value"
+    assert store._supports_getex is False
+    mock_redis.getex.assert_awaited_once_with("test:mykey", ex=30)
+    mock_script.assert_awaited_once_with(keys=["test:mykey"], args=[30])
+
+    # Subsequent call skips getex entirely and directly executes Lua script
+    mock_redis.getex.reset_mock()
+    mock_script.reset_mock()
+    val2 = await store.get("mykey", renew_for=timedelta(seconds=45))
+    assert val2 == b"fallback-value"
+    mock_redis.getex.assert_not_awaited()
+    mock_script.assert_awaited_once_with(keys=["test:mykey"], args=[45])
+
+
+async def test_redis_store_getex_reraises_other_response_error() -> None:
+    mock_redis = MagicMock()
+    mock_redis.getex = AsyncMock(side_effect=ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value"))
+    mock_redis.register_script = MagicMock()
+
+    store = RedisStore(redis=mock_redis, namespace="test")
+    with pytest.raises(ResponseError, match="WRONGTYPE"):
+        await store.get("mykey", renew_for=10)
+
+    assert store._supports_getex is True
+
+
+def test_redis_store_with_namespace_preserves_supports_getex() -> None:
+    mock_redis = MagicMock()
+    mock_redis.register_script = MagicMock()
+    store = RedisStore(redis=mock_redis, namespace="foo")
+    store._supports_getex = False
+
+    child_store = store.with_namespace("bar")
+    assert child_store._supports_getex is False
